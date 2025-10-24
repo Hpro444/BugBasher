@@ -1,0 +1,6 @@
+langchain-core
+langgraph
+pytest
+langchain_ollama
+tqdm
+datasets
