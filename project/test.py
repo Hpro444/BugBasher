@@ -10,5 +10,6 @@ if __name__ == "__main__":
     # print(dataset.dataset[0])
 
     # agent = BugBashAgent()
-
-    # print(agent.invoke(dataset.dataset[0]['prompt']))
+    #
+    # while True:
+    #     print(agent.invoke(input('> ')))

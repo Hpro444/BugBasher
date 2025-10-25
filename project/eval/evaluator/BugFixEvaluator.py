@@ -4,6 +4,7 @@ from project.sandbox import run_in_sandbox
 from project.agent.model import BugBashAgent
 from project.eval.dataset import HumanEvalFixDataset
 from typing import Optional
+import textwrap
 
 
 class BugFixEvaluator:
@@ -31,17 +32,15 @@ class BugFixEvaluator:
         return llm_output.strip()
 
     @staticmethod
-    def _generate_test_code(llm_code: str, test_code: str, entry_point: str) -> str:
+    def _generate_test_code(llm_code: str, test_code: str) -> str:
         code = f"""
-        {llm_code}
-        
-        {test_code}
-        
-        
-if __name__ == "__main__":
-    check({entry_point})
-        """
-        return code
+    {llm_code}
+
+    {test_code}
+
+    """
+        # Dedent to remove unwanted leading spaces
+        return textwrap.dedent(code).strip() + "\n"
 
     @staticmethod
     def _extract_code(llm_output: str) -> str:
@@ -72,7 +71,6 @@ if __name__ == "__main__":
             sample = dataset[i]
             prompt = sample["prompt"]
             test_code = sample["test"]
-            entry_point = sample["entry_point"]
 
             # Ask the agent to fix the bug
             llm_output = self._agent.invoke(prompt)
@@ -80,7 +78,7 @@ if __name__ == "__main__":
             llm_code = self._get_code_from_llm_output(llm_output)
 
             # Build the complete test code
-            code_to_run = self._generate_test_code(llm_code, test_code, entry_point)
+            code_to_run = self._generate_test_code(llm_code, test_code)
 
             # Run inside sandbox
             result = run_in_sandbox(code_to_run)

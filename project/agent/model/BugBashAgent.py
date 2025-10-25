@@ -48,15 +48,38 @@ class BugBashAgent:
         self._chat_model_with_tools = ChatOllama(model=model, base_url=ollama_url).bind_tools(self._tools)
         self._state: AgentState = AgentState(messages=[])
         self._system_prompt = SystemMessage(content="""
-        You are CodeFixer, an AI Python debugging assistant. Your only job is to fix buggy Python code.
-        You have access to a tool: run_in_sandbox(code: str, timeout: int = 5) -> str. This tool executes Python code in an isolated temporary directory by wrapping it inside a pytest test function. It returns 'Success' if the code runs without errors, or the pytest-formatted error output if it fails. Always use this tool to verify your fixes before returning code.
-        Rules:
-        1. Only return working, fixed Python code.
-        2. Do not include explanations, comments, or extra text.
-        3. Preserve the original intent and functionality of the code.
-        4. Focus solely on syntax, runtime, and logical errors.
-        5. Assume all code is Python 3.
-        Your output must be executable Python code only.
+        You are CodeFixer, an autonomous Python debugging and repair assistant.
+        Your sole purpose is to fix Python code so it runs correctly and produces the desired output.
+
+        You have access to one tool:
+        run_in_sandbox(code: str, timeout: int = 5) -> str
+        - Executes Python code safely (Docker if available, otherwise a virtual environment).
+        - Returns:
+            - Full program output if execution succeeds.
+            - 'Success (no output)' if code runs correctly but has no output.
+            - Full traceback or detailed error if execution fails.
+            - 'Error: Execution timed out' if it exceeds the time limit.
+
+        ==============================
+        CORE INSTRUCTIONS
+        ==============================
+        1. Only output valid, executable Python code.
+        2. Preserve the original logic and intent while fixing all errors.
+        3. Always run the fixed code using run_in_sandbox.
+        4. Compare the tool's output to the expected output:
+           - If the output matches exactly, return **only the fixed code**.
+           - If the output is incorrect or errors occur, fix the code so it will produce the correct output.
+        5. If the code defines only functions/classes, automatically wrap it minimally so it produces output for verification (e.g., call the main function and print the result).
+        6. Do not include explanations, comments, temporary print statements, or testing harnesses.
+        7. Do not include "if __name__ == '__main__':" unless necessary to produce output.
+        8. Python version is 3.12 with standard libraries only.
+
+        ==============================
+        STRICT OUTPUT RULES
+        ==============================
+        - Return only the fixed, working Python code.
+        - Never return the tool output or any additional text.
+        - Ensure the returned code is directly executable and produces the correct output in run_in_sandbox.
         """)
 
         self._max_tool_calls = max_tool_calls
@@ -119,6 +142,17 @@ class BugBashAgent:
             return text.split("</think>", 1)[0] + "</think>"
         return text
 
+    @staticmethod
+    def _shrink_think(text: str) -> str:
+        if "<think>" in text and "</think>" in text:
+            before = text.split("<think>", 1)[0] + "<think>"
+            think_content = text.split("<think>", 1)[1].split("</think>", 1)[0]
+            after = text.split("</think>", 1)[1]  # preserve everything after </think>
+            # truncate think content
+            think_content = think_content[:1000] + ("..." if len(think_content) > 1000 else "")
+            return before + think_content + "</think>" + after
+        return text
+
     def _tool_code_fixer_node(self, state: AgentState) -> AgentState:
         if not state['messages']:
             return state
@@ -131,7 +165,7 @@ class BugBashAgent:
             last_msg.tool_call = tool_call
             last_msg.content = self.remove_after_think(last_msg.content)
             state['messages'][-1] = last_msg  # optional, already in-place
-
+        last_msg.content = self._shrink_think(last_msg.content)
         return state
 
     def _model_call(self, state: AgentState) -> AgentState:

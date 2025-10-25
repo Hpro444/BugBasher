@@ -33,7 +33,6 @@ class HumanEvalFixDataset:
         for item in tqdm(dataset, desc="Cleaning dataset"):
             cleaned_data.append({
                 "prompt": item.get("declaration") + item.get("buggy_solution"),
-                "entry_point": item.get("entry_point"),
                 "test": item.get("test"),
             })
         return Dataset.from_list(cleaned_data)

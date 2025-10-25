@@ -7,7 +7,7 @@ from langchain_core.tools import tool
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # adjust if needed
 VENV_DIR = BASE_DIR / "venv"
-DOCKER_IMAGE_NAME = "python-pytest-sandbox"
+DOCKER_IMAGE_NAME = "python-sandbox"
 
 
 def is_docker_available() -> bool:
@@ -20,13 +20,12 @@ def is_docker_available() -> bool:
 
 
 def ensure_venv():
-    """Create persistent virtual environment and install pytest if needed."""
+    """Create persistent virtual environment and install pip if needed."""
     if not VENV_DIR.exists():
         print("Creating persistent virtual environment...")
         venv.create(VENV_DIR, with_pip=True)
         python_bin = get_python_bin()
         subprocess.run([python_bin, "-m", "pip", "install", "--upgrade", "pip"], check=True)
-        subprocess.run([python_bin, "-m", "pip", "install", "pytest"], check=True)
     else:
         python_bin = get_python_bin()
     return python_bin
@@ -37,25 +36,16 @@ def get_python_bin() -> str:
     return str(VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
 
 
-def write_temp_test(code: str, use_pytest: bool) -> str:
-    """Wrap user code in a pytest test function and write to a temporary file."""
+def write_temp_code(code: str) -> str:
+    """Write user code to a temporary file."""
     with NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        if use_pytest:
-            wrapped_code = (
-                    "import pytest\n\n"
-                    "def test_user_code():\n"
-                    + "\n".join(f"    {line}" if line.strip() else "" for line in code.splitlines())
-            )
-            f.write(wrapped_code)
-        else:
-            f.write(code)
+        f.write(code)
         return f.name
 
 
 def ensure_docker_image():
     """Check if the prebuilt Docker image exists, build if not."""
     try:
-        # Check if image exists
         result = subprocess.run(
             ["docker", "images", "-q", DOCKER_IMAGE_NAME],
             capture_output=True,
@@ -64,9 +54,10 @@ def ensure_docker_image():
         )
         if not result.stdout.strip():
             print(f"Docker image '{DOCKER_IMAGE_NAME}' not found. Building it now...")
-            dockerfile = f"""
+            dockerfile = """
             FROM python:3.12-slim
-            RUN pip install --quiet pytest
+            RUN pip install --quiet --upgrade pip
+            WORKDIR /app
             """
             with NamedTemporaryFile("w", suffix=".Dockerfile", delete=False) as f:
                 f.write(dockerfile)
@@ -82,77 +73,85 @@ def ensure_docker_image():
         raise RuntimeError(f"Docker image setup failed: {e}")
 
 
-def run_in_docker(code: str, timeout: int, use_pytest: bool) -> str:
-    """Run code inside a prebuilt Docker container."""
+def run_in_docker(code: str, timeout: int) -> str:
+    """Run plain Python code inside a prebuilt Docker container."""
     ensure_docker_image()
-    test_path = write_temp_test(code, use_pytest)
+    code_path = write_temp_code(code)
     try:
         print("Running code in Docker container...")
         cmd = [
             "docker", "run", "--rm",
-            "-v", f"{test_path}:/tmp/test.py",
+            "-v", f"{code_path}:/tmp/script.py",
             DOCKER_IMAGE_NAME,
-            "pytest" if use_pytest else "python", "/tmp/test.py",
-            "--maxfail=1", "-q", "--disable-warnings", "--tb=short",
-            "--import-mode=importlib", "--no-header", "--no-summary"
+            "python", "/tmp/script.py"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        output = result.stdout.strip()
+        error = result.stderr.strip()
+
         if result.returncode == 0:
-            return "Success"
+            return output or "Success (no output)"
         else:
-            output = result.stdout.strip() or result.stderr.strip()
-            return f"Error:\n{output}"
+            return f"Error (Exit code {result.returncode}):\n{error or output}"
     except subprocess.TimeoutExpired:
         return "Error: Execution timed out"
     finally:
-        os.remove(test_path)
+        os.remove(code_path)
 
 
-def run_in_venv(code: str, timeout: int, use_pytest: bool) -> str:
-    """Run code inside the persistent venv using pytest."""
+def run_in_venv(code: str, timeout: int) -> str:
+    """Run plain Python code inside the persistent venv."""
     print("Running code in persistent virtual environment...")
     python_bin = ensure_venv()
-    test_path = write_temp_test(code, use_pytest)
+    code_path = write_temp_code(code)
     try:
-        cmd = [
-            python_bin, "-m", "pytest",
-            "--maxfail=1", "-q", "--disable-warnings", "--tb=short",
-            "--import-mode=importlib",
-            "--no-header", "--no-summary",
-            test_path
-        ]
+        cmd = [python_bin, code_path]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env={"PYTHONPATH": str(BASE_DIR)})
+        output = result.stdout.strip()
+        error = result.stderr.strip()
+
         if result.returncode == 0:
-            return "Success"
+            return output or "Success (no output)"
         else:
-            output = result.stdout.strip() or result.stderr.strip()
-            return f"Error:\n{output}"
+            return f"Error (Exit code {result.returncode}):\n{error or output}"
     except subprocess.TimeoutExpired:
         return "Error: Execution timed out"
     finally:
-        os.remove(test_path)
+        os.remove(code_path)
 
 
 @tool
 def run_in_sandbox_tool(code: str, timeout: int = 5) -> str:
-    """Run Python code safely: Docker if available, otherwise persistent venv."""
+    """
+    Run Python code safely: Docker if available, otherwise persistent venv.
+
+    IMPORTANT:
+    - The code must be directly executable and produce output when run.
+    - If the code only contains functions or classes, it should include a minimal runner,
+      such as an "if __name__ == '__main__':" block or explicit function calls with print statements,
+      so that run_in_sandbox can verify its output.
+    - Returns the program output if execution succeeds, or detailed errors if it fails.
+    - Returns 'Success (no output)' if the code runs correctly but produces no output.
+    - Returns 'Error: Execution timed out' if it exceeds the time limit.
+    """
+
     if is_docker_available():
         try:
-            return run_in_docker(code, timeout, True)
+            return run_in_docker(code, timeout)
         except Exception as e:
             print(f"Docker failed: {e}, falling back to venv...")
     else:
         print("Docker not available, using persistent venv...")
-    return run_in_venv(code, timeout, True)
+    return run_in_venv(code, timeout)
 
 
 def run_in_sandbox(code: str, timeout: int = 5) -> str:
     """Run Python code safely: Docker if available, otherwise persistent venv."""
     if is_docker_available():
         try:
-            return run_in_docker(code, timeout, False)
+            return run_in_docker(code, timeout)
         except Exception as e:
             print(f"Docker failed: {e}, falling back to venv...")
     else:
         print("Docker not available, using persistent venv...")
-    return run_in_venv(code, timeout, False)
+    return run_in_venv(code, timeout)
