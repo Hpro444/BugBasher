@@ -13,5 +13,10 @@ class AgentState(TypedDict):
             This sequence is automatically managed by LangGraph to
             accumulate messages (system, human, AI, or tool) as the
             agent interacts with its environment.
+
+        last_executed_code (str):
+            The code that was most recently executed in the sandbox
+            or tool environment.
     """
     messages: Annotated[Sequence[BaseMessage], add_messages]
+    last_executed_code: str

@@ -74,7 +74,6 @@ class BugFixEvaluator:
 
             # Ask the agent to fix the bug
             llm_output = self._agent.invoke(prompt)
-            self._agent.reset_state()
             llm_code = self._get_code_from_llm_output(llm_output)
 
             # Build the complete test code

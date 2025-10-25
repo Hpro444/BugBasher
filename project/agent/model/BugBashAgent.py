@@ -1,8 +1,7 @@
 from typing import List, Optional
-import json
-
+from project.cleaners import LLOutputCleaner
 from project.sandbox import run_in_sandbox_tool
-from langchain_core.tools.structured import StructuredTool
+from langchain_core.tools.structured import BaseTool
 from project.agent.state import AgentState
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -25,7 +24,7 @@ class BugBashAgent:
 
     """
 
-    def __init__(self, model: Optional[str] = None, ollama_url: Optional[str] = None, tools: Optional[List[StructuredTool]] = None, max_tool_calls: int = 5):
+    def __init__(self, model: Optional[str] = None, ollama_url: Optional[str] = None, tools: Optional[List[BaseTool]] = None, max_tool_calls: int = 5, use_persistent_memory: bool = False):
         """
          Initializes the BugBashAgent with a language model, tools, and configuration.
 
@@ -40,13 +39,16 @@ class BugBashAgent:
          max_tool_calls : int
             Maximum number of tool calls allowed per debugging session
             before the agent stops automatically.
+         use_persistent_memory : bool, default=False
+            If `True`, enables the agent to persist context or conversation state
+            between sessions, allowing for incremental debugging and multi-step reasoning.
          """
+        self._use_persistent_memory = use_persistent_memory
         model = model or Configuration().ollama_model
         ollama_url = ollama_url or Configuration().ollama_url
-
         self._tools = tools or [run_in_sandbox_tool]
         self._chat_model_with_tools = ChatOllama(model=model, base_url=ollama_url).bind_tools(self._tools)
-        self._state: AgentState = AgentState(messages=[])
+        self._state: AgentState = AgentState(messages=[], last_executed_code='')
         self._system_prompt = SystemMessage(content="""
         You are CodeFixer, an autonomous Python debugging and repair assistant.
         Your sole purpose is to fix Python code so it runs correctly and produces the desired output.
@@ -81,10 +83,13 @@ class BugBashAgent:
         - Never return the tool output or any additional text.
         - Ensure the returned code is directly executable and produces the correct output in run_in_sandbox.
         """)
-
         self._max_tool_calls = max_tool_calls
         self._tool_calls_made = 0
+        self._cleaner = LLOutputCleaner()
+        self._agent = None
+        self._compile_graph()
 
+    def _compile_graph(self):
         # Create graph
         graph = StateGraph(AgentState)
 
@@ -97,76 +102,57 @@ class BugBashAgent:
         graph.add_edge('tools', 'model_call')
 
         graph.set_entry_point('model_call')
-
         self._agent = graph.compile()
-
-    @staticmethod
-    def extract_tool_call_from_content(content: str) -> Optional[dict]:
-        """
-        Checks if the content contains a </think> tag followed by a JSON tool call.
-        If yes, returns the parsed tool call dict; else None.
-        """
-        if "</think>" not in content:
-            return None
-
-        # Everything after </think>
-        after_think = content.split("</think>", 1)[1].strip()
-
-        # Try to parse JSON if it contains "name" field
-        if '"name"' in after_think:
-            try:
-                tool_call = json.loads(after_think)
-                # Make sure it has required keys
-                if isinstance(tool_call, dict) and "name" in tool_call and "arguments" in tool_call:
-                    return tool_call
-            except json.JSONDecodeError:
-                return None
-        return None
-
-    @staticmethod
-    def remove_after_think(text: str) -> str:
-        """
-        Removes everything after the first occurrence of </think> in the given text.
-
-        Parameters
-        ----------
-        text : str
-            The input string possibly containing a </think> tag.
-
-        Returns
-        -------
-        str
-            The text up to and including </think>. If the tag is not found, returns the original text.
-        """
-        if "</think>" in text:
-            return text.split("</think>", 1)[0] + "</think>"
-        return text
-
-    @staticmethod
-    def _shrink_think(text: str) -> str:
-        if "<think>" in text and "</think>" in text:
-            before = text.split("<think>", 1)[0] + "<think>"
-            think_content = text.split("<think>", 1)[1].split("</think>", 1)[0]
-            after = text.split("</think>", 1)[1]  # preserve everything after </think>
-            # truncate think content
-            think_content = think_content[:1000] + ("..." if len(think_content) > 1000 else "")
-            return before + think_content + "</think>" + after
-        return text
 
     def _tool_code_fixer_node(self, state: AgentState) -> AgentState:
         if not state['messages']:
             return state
 
         last_msg = state['messages'][-1]
-        tool_call = self.extract_tool_call_from_content(last_msg.content)
+        tool_call = self._cleaner.extract_tool_call_from_content(last_msg.content)
 
         if tool_call:
             # Modify in-place
             last_msg.tool_call = tool_call
-            last_msg.content = self.remove_after_think(last_msg.content)
             state['messages'][-1] = last_msg  # optional, already in-place
-        last_msg.content = self._shrink_think(last_msg.content)
+
+        if state['messages'][-1].tool_calls:
+            state['last_executed_code'] = state['messages'][-1].tool_calls[0]['args']['code']
+
         return state
+
+    def _update_system_prompt(self, state: AgentState):
+        """
+        Updates the system prompt with context about the last executed code attempt.
+
+        This helps the model understand what code it last tried to run and improve
+        its next fix attempt accordingly.
+        """
+        last_code = state.get("last_executed_code", "").strip()
+
+        if last_code:
+            self._system_prompt = SystemMessage(content=f"""
+            You are CodeFixer, an autonomous Python debugging assistant.
+
+            Rules :
+            - Fix Python code so it runs and produces the expected output.
+            - Always run the fixed code with run_in_sandbox(code: str, timeout: int = 5) and carefully check the tool response.
+            - Focus on the output part — it determines success.
+            - If the original code only defines functions/classes, call them (e.g., run a simple main) so the sandbox can verify output.
+            - When the tool shows the output matches the expected result, return ONLY the fixed Python code (no explanations, no extra text).
+            - If it fails or errors, keep fixing and re-running until the sandbox output is correct.
+            - Use Python 3.12 standard library.
+
+            Last attempt at fixing:
+            ```python
+            {last_code}
+           ==============================
+        STRICT OUTPUT RULES
+        ==============================
+        - Return only the fixed, working Python code.
+        - Never return the tool output or any additional text.
+        - Ensure the returned code is directly executable and produces the correct output in run_in_sandbox.
+            """)
 
     def _model_call(self, state: AgentState) -> AgentState:
         """
@@ -182,8 +168,10 @@ class BugBashAgent:
                AgentState
                    Updated state containing the model's response message.
                """
+        self._update_system_prompt(state)
+        print(state['messages'])
         response = self._chat_model_with_tools.invoke([self._system_prompt] + state['messages'])
-        return {"messages": [response]}
+        return {"messages": [response], "last_executed_code": state['last_executed_code']}
 
     def _should_continue(self, state: AgentState) -> str:
         """
@@ -229,9 +217,12 @@ class BugBashAgent:
         self._tool_calls_made = 0
         self._state['messages'].append(HumanMessage(query))
         self._state = self._agent.invoke(self._state)
-        return self._state['messages'][-1].content
+        output = self._state['messages'][-1].content
+        if self._use_persistent_memory:
+            self._reset_state()
+        return output
 
-    def reset_state(self):
+    def _reset_state(self):
         """
                 Resets the agent's conversation and internal state.
 
