@@ -44,10 +44,10 @@ class BugBashAgent:
             between sessions, allowing for incremental debugging and multi-step reasoning.
          """
         self._use_persistent_memory = use_persistent_memory
-        model = model or Configuration().ollama_model
+        self._model = model or Configuration().ollama_model
         ollama_url = ollama_url or Configuration().ollama_url
         self._tools = tools or [run_in_sandbox_tool]
-        self._chat_model_with_tools = ChatOllama(model=model, base_url=ollama_url).bind_tools(self._tools)
+        self._chat_model_with_tools = ChatOllama(model=self._model, base_url=ollama_url).bind_tools(self._tools)
         self._state: AgentState = AgentState(messages=[], last_executed_code='')
         self._system_prompt = SystemMessage(content="""
         You are CodeFixer, an autonomous Python debugging and repair assistant.
@@ -169,7 +169,6 @@ class BugBashAgent:
                    Updated state containing the model's response message.
                """
         self._update_system_prompt(state)
-        print(state['messages'])
         response = self._chat_model_with_tools.invoke([self._system_prompt] + state['messages'])
         return {"messages": [response], "last_executed_code": state['last_executed_code']}
 
@@ -229,3 +228,7 @@ class BugBashAgent:
                 This is useful between independent debugging sessions to clear context.
                 """
         self._state['messages'] = []
+
+
+    def get_model(self):
+        return self._model

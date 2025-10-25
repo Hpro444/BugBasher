@@ -90,7 +90,7 @@ def run_in_docker(code: str, timeout: int) -> str:
         error = result.stderr.strip()
 
         if result.returncode == 0:
-            return output or "Success (no output)"
+            return "Success " +  output or "Success (no output)"
         else:
             return f"Error (Exit code {result.returncode}):\n{error or output}"
     except subprocess.TimeoutExpired:
@@ -111,7 +111,7 @@ def run_in_venv(code: str, timeout: int) -> str:
         error = result.stderr.strip()
 
         if result.returncode == 0:
-            return output or "Success (no output)"
+            return "Success " +  output or "Success (no output)"
         else:
             return f"Error (Exit code {result.returncode}):\n{error or output}"
     except subprocess.TimeoutExpired:
