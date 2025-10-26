@@ -10,7 +10,7 @@ It leverages reasoning and execution steps to iteratively identify, repair, and 
 ### 1️⃣ Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/BugBasher.git
+git clone https://github.com/Hpro444/BugBasher.git
 cd BugBasher
 ```
 
