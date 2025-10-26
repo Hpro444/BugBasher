@@ -10,6 +10,9 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from project.config import Configuration
 
+import concurrent.futures
+import time
+
 
 class BugBashAgent:
     """
@@ -113,7 +116,7 @@ class BugBashAgent:
 
         if tool_call:
             # Modify in-place
-            last_msg.tool_call = tool_call
+            last_msg.tool_calls = [tool_call]
             state['messages'][-1] = last_msg  # optional, already in-place
 
         if state['messages'][-1].tool_calls:
@@ -169,7 +172,34 @@ class BugBashAgent:
                    Updated state containing the model's response message.
                """
         self._update_system_prompt(state)
-        response = self._chat_model_with_tools.invoke([self._system_prompt] + state['messages'])
+
+        max_retries = 3
+        attempt = 0
+
+        while attempt < max_retries:
+            attempt += 1
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        self._chat_model_with_tools.invoke,
+                        [self._system_prompt] + state['messages']
+                    )
+                    # Wait max 60s for response
+                    response = future.result(timeout=60)
+                # Success, exit loop
+                break
+            except concurrent.futures.TimeoutError:
+                print(f"Model call timed out after 60s (attempt {attempt}/{max_retries})")
+                if attempt == max_retries:
+                    raise TimeoutError("Model call failed after 3 retries due to timeout.")
+                continue
+            except Exception as e:
+                print(f"Model call failed with exception: {e} (attempt {attempt}/{max_retries})")
+                if attempt == max_retries:
+                    raise RuntimeError(f"Model call failed after 3 retries: {e}")
+                time.sleep(1)
+                continue
+
         return {"messages": [response], "last_executed_code": state['last_executed_code']}
 
     def _should_continue(self, state: AgentState) -> str:
@@ -228,7 +258,6 @@ class BugBashAgent:
                 This is useful between independent debugging sessions to clear context.
                 """
         self._state['messages'] = []
-
 
     def get_model(self):
         return self._model

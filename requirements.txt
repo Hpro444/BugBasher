@@ -5,4 +5,3 @@ langchain_ollama
 tqdm
 datasets
 streamlit
-rich

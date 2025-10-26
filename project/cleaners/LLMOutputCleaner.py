@@ -2,6 +2,7 @@ from typing import Optional
 import json
 import re
 
+
 class LLOutputCleaner:
 
     @staticmethod
@@ -23,25 +24,34 @@ class LLOutputCleaner:
 
         json_text = json_match.group(0)
 
+        # Preprocess: escape control characters in JSON string (like raw newlines in Python code)
+        def escape_newlines_in_json_string(match):
+            inner = match.group(0)
+            escaped = inner.replace("\n", "\\n").replace("\r", "\\r")
+            return escaped
+
+        json_text = re.sub(r'\"(.*?)\"', escape_newlines_in_json_string, json_text, flags=re.DOTALL)
+
         try:
             tool_call = json.loads(json_text)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print("JSON decode error:", e)
             return None
 
-        # Normalize to expected format
+        # Normalize to expected format and add hardcoded id
         if isinstance(tool_call, dict):
-            # Case 1: already has name & arguments
             if "name" in tool_call and "arguments" in tool_call:
-                # If arguments is dict, wrap it in a list for consistency
                 if isinstance(tool_call["arguments"], dict):
-                    tool_call["arguments"] = [tool_call["arguments"]]
+                    tool_call["args"] = tool_call["arguments"]
+                tool_call["id"] = "1905tool_call_id"  # <-- added hardcoded id
+                tool_call['name'] = 'run_in_sandbox_tool'
                 return tool_call
 
-            # Case 2: only code given → wrap as run_in_sandbox
             if "code" in tool_call:
                 return {
-                    "name": "run_in_sandbox",
-                    "arguments": [{"code": tool_call["code"], "timeout": 5}]
+                    "id": "1905tool_call_id",  # <-- added hardcoded id
+                    "name": "run_in_sandbox_tool",
+                    "args": {"code": tool_call["code"], "timeout": 5}
                 }
 
         return None

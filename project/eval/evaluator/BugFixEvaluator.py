@@ -7,14 +7,13 @@ import textwrap
 from project.domain import EvalResult
 from project.cleaners import LLOutputCleaner
 
+
 class BugFixEvaluator:
 
     def __init__(self, agent: Optional[BugBashAgent] = None, dataset: Optional[HumanEvalFixDataset] = None):
         self._agent = agent if agent is not None else BugBashAgent()
         self._dataset = dataset if dataset is not None else HumanEvalFixDataset()
         self._code_cleaner = LLOutputCleaner()
-
-
 
     @staticmethod
     def _generate_test_code(llm_code: str, test_code: str) -> str:
@@ -25,8 +24,7 @@ class BugFixEvaluator:
 
     """
         # Dedent to remove unwanted leading spaces
-        return textwrap.dedent(code).strip() + "\n"
-
+        return "from typing import * \n" + textwrap.dedent(code).strip() + "\n"
 
     def evaluate(self, num_tests: Optional[int] = None):
         """
@@ -55,13 +53,15 @@ class BugFixEvaluator:
 
             # Run inside sandbox
             result = run_in_sandbox(code_to_run)
+
+            # print(code_to_run)
+            # print(result)
+
             # Simple pass/fail detection
             if "Success" in result:
                 passed += 1
 
-
-        output = EvalResult(passed=passed,total=total,score_in_percentage=f"{passed / total:.1%}",score_pass1=passed / total,model_name=self._agent.get_model())
-
+        output = EvalResult(passed=passed, total=total, score_in_percentage=f"{passed / total:.1%}", score_pass1=passed / total, model_name=self._agent.get_model())
 
         return output
 
